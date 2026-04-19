@@ -164,10 +164,10 @@ describe("lib/job-control.mjs", () => {
 });
 
 describe("kimi-companion.mjs CLI", () => {
-  it("should show help", () => {
+  it("should reject unknown command", () => {
     const result = spawnSync("node", [SCRIPT, "help"], { encoding: "utf8", timeout: 10_000 });
-    assert.equal(result.status, 0);
-    assert.match(result.stdout, /kimi-companion/);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Unknown command/);
   });
 
   it("should run setup command", () => {

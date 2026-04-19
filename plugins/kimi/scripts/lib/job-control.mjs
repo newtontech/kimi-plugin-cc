@@ -1,6 +1,7 @@
 import fs from "node:fs";
-import { listJobs, getConfig, readStoredJob, resolveJobLogFile } from "./state.mjs";
+import { listJobs, getConfig, readStoredJob, resolveJobLogFile, resolveStateDir } from "./state.mjs";
 import { SESSION_ID_ENV } from "./tracked-jobs.mjs";
+import { formatElapsed } from "./render.mjs";
 
 const DEFAULT_MAX_STATUS_JOBS = 8;
 const DEFAULT_MAX_PROGRESS_LINES = 4;
@@ -27,28 +28,13 @@ function getJobTypeLabel(job) {
   return job.type || "job";
 }
 
-function formatElapsed(startValue, endValue = null) {
-  const start = Date.parse(startValue ?? "");
-  if (!Number.isFinite(start)) return null;
-  const end = endValue ? Date.parse(endValue) : Date.now();
-  if (!Number.isFinite(end) || end < start) return null;
-  const totalSec = Math.max(0, Math.round((end - start) / 1000));
-  const h = Math.floor(totalSec / 3600);
-  const m = Math.floor((totalSec % 3600) / 60);
-  const s = totalSec % 60;
-  if (h > 0) return `${h}h ${m}m`;
-  if (m > 0) return `${m}m ${s}s`;
-  return `${s}s`;
-}
-
 export function readJobProgressPreview(logFile, maxLines = DEFAULT_MAX_PROGRESS_LINES) {
   if (!logFile || !fs.existsSync(logFile)) return [];
   const lines = fs.readFileSync(logFile, "utf8")
     .split(/\r?\n/)
     .map((l) => l.trimEnd())
     .filter(Boolean)
-    .filter((l) => l.startsWith("["))
-    .map((l) => l.replace(/^\[[^\]]+\]\s*/, "").trim())
+    .map((l) => l.startsWith("[") ? l.replace(/^\[[^\]]+\]\s*/, "").trim() : l.trim())
     .filter(Boolean);
   return lines.slice(-maxLines);
 }
@@ -151,8 +137,6 @@ export function resolveCancelableJob(cwd, reference = "", options = {}) {
   if (getCurrentSessionId(options)) throw new Error("No active Kimi jobs to cancel for this session.");
   throw new Error("No active Kimi jobs to cancel.");
 }
-
-import { resolveStateDir } from "./state.mjs";
 
 function resolveStateDirFromCwd(cwd) {
   return resolveStateDir(cwd);

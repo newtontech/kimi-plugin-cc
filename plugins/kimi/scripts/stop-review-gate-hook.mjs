@@ -35,7 +35,7 @@ function logNote(note) {
 }
 
 function buildStopReviewPrompt(input, reviewContext) {
-  const lastAssistantMessage = String(input.last_assistant_message ?? "").trim();
+  const lastAssistantMessage = String(input.last_assistant_message ?? input.claude_response ?? "").trim();
   const template = loadPromptTemplate(ROOT_DIR, "stop-review-gate");
   if (!template) return null;
 

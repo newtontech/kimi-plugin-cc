@@ -80,6 +80,7 @@ function handleSetup(args) {
 }
 
 async function handleReview(args) {
+  try {
   const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
   const model = args.model || getDefaultModel();
   const baseRef = args.base || null;
@@ -114,7 +115,7 @@ async function handleReview(args) {
       title: "Review",
     });
 
-    upsertJob(stateDir, { id: jobId, type: "review", status: "running", model, stats, kind: "review" });
+    upsertJob(stateDir, { id: jobId, type: "review", status: "running", model, stats, kind: "review", sessionId: process.env[SESSION_ID_ENV] || null });
     promise.catch((err) => { upsertJob(stateDir, { id: jobId, status: "failed", error: err.message }); });
 
     log(`Review started in background. Job ID: ${jobId}`);
@@ -130,9 +131,11 @@ async function handleReview(args) {
     args.json ? { review: "Review", target, result: parsed.parsed, rawOutput: parsed.rawOutput } : renderReviewResult(parsed, { reviewLabel: "Review", targetLabel: target.label }),
     args.json
   );
+  } catch (err) { logError(err.message); process.exit(1); }
 }
 
 async function handleAdversarialReview(args) {
+  try {
   const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
   const model = args.model || getDefaultModel();
   const baseRef = args.base || null;
@@ -163,7 +166,7 @@ async function handleAdversarialReview(args) {
       title: "Adversarial Review",
     });
 
-    upsertJob(stateDir, { id: jobId, type: "adversarial-review", status: "running", model, kind: "adversarial-review" });
+    upsertJob(stateDir, { id: jobId, type: "adversarial-review", status: "running", model, kind: "adversarial-review", sessionId: process.env[SESSION_ID_ENV] || null });
     promise.catch((err) => { upsertJob(stateDir, { id: jobId, status: "failed", error: err.message }); });
 
     log(`Adversarial review started in background. Job ID: ${jobId}`);
@@ -178,6 +181,7 @@ async function handleAdversarialReview(args) {
     args.json ? { review: "Adversarial Review", target, result: parsed.parsed, rawOutput: parsed.rawOutput } : renderReviewResult(parsed, { reviewLabel: "Adversarial Review", targetLabel: target.label }),
     args.json
   );
+  } catch (err) { logError(err.message); process.exit(1); }
 }
 
 async function handleTask(args) {
@@ -192,7 +196,7 @@ async function handleTask(args) {
 
   const result = runKimiPrompt(prompt, { cwd, model, timeout: 300_000 });
   if (!result.ok) { logError(`Task failed: ${result.error}`); process.exit(1); }
-  log(result.stdout);
+  outputResult(args.json ? { task: prompt.slice(0, 80), output: result.stdout } : result.stdout, args.json);
 }
 
 function handleStatus(args) {
@@ -321,5 +325,8 @@ switch (args.subcommand) {
   case "status": handleStatus(args); break;
   case "result": handleResult(args); break;
   case "cancel": await handleCancel(args); break;
-  default: handleHelp(); break;
+  default:
+    logError(`Unknown command: "${args.subcommand}". Run without arguments for help.`);
+    process.exit(1);
+    break;
 }

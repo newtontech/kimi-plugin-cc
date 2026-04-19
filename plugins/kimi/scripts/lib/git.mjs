@@ -102,8 +102,8 @@ export function resolveReviewTarget(cwd, options = {}) {
 }
 
 function validateGitRef(ref) {
-  if (!/^[a-zA-Z0-9._\/-]+$/.test(ref)) {
-    throw new Error(`Invalid git ref: "${ref}". Only alphanumeric, dots, dashes, slashes, and underscores allowed.`);
+  if (!/^[a-zA-Z0-9._\/~^@{}-]+$/.test(ref)) {
+    throw new Error(`Invalid git ref: "${ref}". Only alphanumeric, dots, dashes, slashes, tildes, carets, at-signs, and braces allowed.`);
   }
 }
 
