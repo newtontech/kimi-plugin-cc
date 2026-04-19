@@ -12,7 +12,7 @@ const { getKimiAvailability, runKimiPrompt, parseStopReviewOutput, getDefaultMod
 const { collectReviewContext } = await import("./lib/git.mjs");
 const { resolveStateDir, getConfig } = await import("./lib/state.mjs");
 
-const STOP_REVIEW_TIMEOUT_MS = 900_000; // 15 minutes
+const STOP_REVIEW_TIMEOUT_MS = 600_000; // 10 minutes
 
 function readHookInput() {
   try {
