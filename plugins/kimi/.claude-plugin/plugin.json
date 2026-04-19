@@ -1,0 +1,14 @@
+{
+  "name": "kimi",
+  "version": "1.0.0",
+  "description": "Use Kimi CLI from Claude Code to review code or delegate tasks.",
+  "author": {
+    "name": "newtontech"
+  },
+  "homepage": "https://github.com/newtontech/kimi-plugin-cc",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/newtontech/kimi-plugin-cc.git"
+  },
+  "license": "MIT"
+}
