@@ -6,19 +6,26 @@
   },
   "metadata": {
     "description": "Kimi CLI integration for Claude Code — code review, adversarial review, and rescue via Kimi AI. Includes Stop Hook review gate.",
-    "version": "1.0.0"
+    "version": "0.0.1"
   },
   "plugins": [
     {
       "name": "kimi",
       "description": "Use Kimi CLI from Claude Code to review code or delegate tasks. Includes /kimi:setup, /kimi:review, /kimi:adversarial-review, /kimi:rescue commands and optional Stop Hook review gate.",
-      "version": "1.0.0",
+      "version": "0.0.1",
       "author": {
         "name": "Newton Tech"
       },
       "source": "./plugins/kimi",
       "category": "code-review",
-      "keywords": ["kimi", "code-review", "security", "adversarial", "rescue", "stop-hook"],
+      "keywords": [
+        "kimi",
+        "code-review",
+        "security",
+        "adversarial",
+        "rescue",
+        "stop-hook"
+      ],
       "homepage": "https://github.com/newtontech/kimi-plugin-cc",
       "repository": "https://github.com/newtontech/kimi-plugin-cc",
       "license": "MIT",
