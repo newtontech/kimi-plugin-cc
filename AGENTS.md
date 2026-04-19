@@ -131,7 +131,26 @@ claude plugin validate plugins/kimi
 
 ---
 
-## 6. Version & Release
+## 6. Git Workflow
+
+### Branching Rules
+
+- **NEVER commit directly to `main`**. All changes must go through a Pull Request.
+- Create a feature branch from `main`: `git checkout -b <type>/<short-description>`
+- Branch naming: `feat/`, `fix/`, `refactor/`, `chore/`, `test/`
+- Use **worktrees** for parallel work: `git worktree add .worktrees/<branch-name> -b <branch-name>`
+- The `.worktrees/` directory is gitignored — worktrees are local only.
+- Squash-merge PRs into `main` to keep history clean.
+
+### PR Workflow
+
+1. Create feature branch from `main`
+2. Make changes and commit
+3. Push branch and create PR via `gh pr create`
+4. Ensure CI passes before merge
+5. Squash-merge via GitHub UI or `gh pr merge --squash`
+
+### Version & Release
 
 ```bash
 # Bump version across all manifests
@@ -140,8 +159,12 @@ npm run bump-version 0.0.2
 # Verify sync
 npm run check-version
 
-# Commit, tag, push
+# Commit on feature branch, create PR
 git add -A && git commit -m "chore: bump version to 0.0.2"
+git push -u origin <branch-name>
+gh pr create --title "chore: bump version to 0.0.2" --body "Version bump"
+
+# After merge, tag on main
 git tag -a v0.0.2 -m "Release v0.0.2"
 git push origin main --follow-tags
 

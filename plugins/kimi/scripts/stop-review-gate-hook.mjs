@@ -1,17 +1,19 @@
 #!/usr/bin/env node
+
 import fs from "node:fs";
 import path from "node:path";
+import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
+
+import { getKimiAvailability, runKimiPrompt, parseStopReviewOutput, getDefaultModel } from "./lib/kimi.mjs";
+import { collectReviewContext } from "./lib/git.mjs";
+import { resolveStateDir, getConfig } from "./lib/state.mjs";
+import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
+import { SESSION_ID_ENV } from "./lib/tracked-jobs.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT_DIR = __dirname;
-const PROMPTS_DIR = path.join(SCRIPT_DIR, "..", "prompts");
-
-const { getKimiAvailability, runKimiPrompt, parseStopReviewOutput, getDefaultModel } = await import("./lib/kimi.mjs");
-const { collectReviewContext } = await import("./lib/git.mjs");
-const { resolveStateDir, getConfig } = await import("./lib/state.mjs");
-
+const ROOT_DIR = path.resolve(SCRIPT_DIR, "..");
 const STOP_REVIEW_TIMEOUT_MS = 600_000; // 10 minutes
 
 function readHookInput() {
@@ -24,14 +26,26 @@ function readHookInput() {
   }
 }
 
-function logNote(note) {
-  process.stderr.write(`[kimi-stop-hook] ${note}\n`);
+function emitDecision(payload) {
+  process.stdout.write(`${JSON.stringify(payload)}\n`);
 }
 
-function readPromptTemplate(name) {
-  const fp = path.join(PROMPTS_DIR, `${name}.md`);
-  if (!fs.existsSync(fp)) return null;
-  return fs.readFileSync(fp, "utf8");
+function logNote(note) {
+  if (note) process.stderr.write(`[kimi-stop-hook] ${note}\n`);
+}
+
+function buildStopReviewPrompt(input, reviewContext) {
+  const lastAssistantMessage = String(input.last_assistant_message ?? "").trim();
+  const template = loadPromptTemplate(ROOT_DIR, "stop-review-gate");
+  if (!template) return null;
+
+  const claudeResponseBlock = lastAssistantMessage
+    ? ["Previous Claude response:", lastAssistantMessage].join("\n")
+    : "";
+
+  let prompt = interpolateTemplate(template, { CLAUDE_RESPONSE_BLOCK: claudeResponseBlock });
+  prompt += `\n\n## Git Status\n${reviewContext.status || "(clean)"}\n\n## Diff\n${reviewContext.diff || "(no changes)"}`;
+  return prompt;
 }
 
 function main() {
@@ -40,68 +54,58 @@ function main() {
   const stateDir = resolveStateDir(cwd);
   const config = getConfig(stateDir);
 
-  // Check if review gate is enabled
   if (!config.stopReviewGate) {
-    logNote("Review gate is disabled. Skipping stop-time review.");
+    logNote("Review gate is disabled. Skipping.");
     return;
   }
 
-  // Check Kimi availability
   const avail = getKimiAvailability(cwd);
   if (!avail.available) {
-    logNote(`Kimi not available: ${avail.reason}`);
+    logNote(`Kimi not available: ${avail.reason}. Skipping gate.`);
     return;
   }
 
-  // Build review context
   const reviewContext = collectReviewContext(cwd);
   if (!reviewContext.diff && !reviewContext.status) {
-    logNote("No code changes detected. Skipping stop-time review.");
+    logNote("No code changes detected. Skipping.");
     return;
   }
 
-  // Read prompt template
-  const template = readPromptTemplate("stop-review-gate");
-  if (!template) {
+  const prompt = buildStopReviewPrompt(input, reviewContext);
+  if (!prompt) {
     logNote("Stop review prompt template not found. Skipping.");
     return;
   }
 
-  // Build full prompt
-  const claudeResponse = input.claude_response || "";
-  let fullPrompt = template;
-  if (claudeResponse) {
-    fullPrompt = fullPrompt.replace("{{CLAUDE_RESPONSE_BLOCK}}", claudeResponse);
-  }
-  fullPrompt += `\n\n## Git Status\n${reviewContext.status || "(clean)"}\n\n## Diff\n${reviewContext.diff || "(no changes)"}`;
-
-  // Run Kimi review
   logNote("Running stop-time Kimi review...");
-  const result = runKimiPrompt(fullPrompt, {
+  const result = runKimiPrompt(prompt, {
     cwd,
     model: getDefaultModel(),
     timeout: STOP_REVIEW_TIMEOUT_MS,
   });
 
   if (!result.ok) {
+    if (result.error?.includes("ETIMEDOUT") || result.error?.includes("timed out")) {
+      logNote("Stop review timed out. Allowing stop (run /kimi:review manually if needed).");
+      return;
+    }
     logNote(`Stop review failed: ${result.error}. Allowing stop.`);
     return;
   }
 
-  // Parse output
   const decision = parseStopReviewOutput(result.stdout);
-
   if (decision.ok) {
     logNote(`ALLOW: ${decision.reason}`);
     return;
   }
 
-  // Block the stop
-  const output = JSON.stringify({
-    decision: "block",
-    reason: decision.reason,
-  });
-  process.stdout.write(output);
+  emitDecision({ decision: "block", reason: decision.reason });
 }
 
-main();
+try {
+  main();
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  process.stderr.write(`[kimi-stop-hook] Internal error: ${message}. Allowing stop.\n`);
+  process.exitCode = 0;
+}

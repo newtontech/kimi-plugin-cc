@@ -1,111 +1,282 @@
 #!/usr/bin/env node
+
 import fs from "node:fs";
 import path from "node:path";
+import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SCRIPT_DIR = __dirname;
-const PROMPTS_DIR = path.join(SCRIPT_DIR, "..", "prompts");
+import { parseArgs } from "./lib/args.mjs";
+import { getKimiAvailability, runKimiPrompt, getDefaultModel, parseKimiOutput } from "./lib/kimi.mjs";
+import { collectReviewContext, getDiffStats, resolveReviewTarget, ensureGitRepository } from "./lib/git.mjs";
+import { resolveStateDir, upsertJob, listJobs, getConfig, setConfig, generateJobId, writeJobFile, readStoredJob } from "./lib/state.mjs";
+import { runTrackedJob, readJobLog, SESSION_ID_ENV } from "./lib/tracked-jobs.mjs";
+import { terminateProcessTree, binaryAvailable } from "./lib/process.mjs";
+import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
+import {
+  renderSetupReport, renderStatusReport, renderJobStatusReport,
+  renderReviewResult, renderCancelReport, renderStoredJobResult, renderTaskResult
+} from "./lib/render.mjs";
+import {
+  buildStatusSnapshot, buildSingleJobSnapshot,
+  resolveResultJob, resolveCancelableJob
+} from "./lib/job-control.mjs";
 
-const { parseArgs } = await import("./lib/args.mjs");
-const { getKimiAvailability, runKimiPrompt, getDefaultModel, parseKimiOutput } = await import("./lib/kimi.mjs");
-const { collectReviewContext, getDiffStats, resolveWorkspaceRoot } = await import("./lib/git.mjs");
-const { resolveStateDir, upsertJob, listJobs, getJob, getLatestJob, getConfig, setConfig } = await import("./lib/state.mjs");
-const { runTrackedJob, readJobLog } = await import("./lib/tracked-jobs.mjs");
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROOT_DIR = path.resolve(__dirname, "..");
+const MAX_PROMPT_BYTES = 512 * 1024;
 
 const argv = process.argv.slice(2);
 const args = parseArgs(argv);
 
-function log(msg) {
-  process.stdout.write(`${msg}\n`);
-}
+function log(msg) { process.stdout.write(`${msg}\n`); }
+function logError(msg) { process.stderr.write(`${msg}\n`); }
 
-function logError(msg) {
-  process.stderr.write(`${msg}\n`);
-}
-
-function readPromptTemplate(name) {
-  const fp = path.join(PROMPTS_DIR, `${name}.md`);
-  if (!fs.existsSync(fp)) return null;
-  return fs.readFileSync(fp, "utf8");
-}
-
-function buildReviewPrompt(reviewContext, promptTemplate) {
-  const parts = [];
-  if (promptTemplate) parts.push(promptTemplate);
-  parts.push("\n## Git Status\n");
-  parts.push(reviewContext.status || "(clean)");
-  parts.push("\n## Diff\n");
-  parts.push(reviewContext.diff || "(no changes)");
-  if (reviewContext.branch) {
-    parts.push(`\n## Branch: ${reviewContext.branch}\n`);
+function outputResult(value, asJson) {
+  if (asJson) {
+    log(JSON.stringify(value, null, 2));
+  } else {
+    process.stdout.write(value);
   }
-  if (reviewContext.baseRef) {
-    parts.push(`\n## Base ref: ${reviewContext.baseRef}\n`);
-  }
-  return parts.join("\n");
 }
 
 function handleSetup(args) {
   const cwd = args._[0] || process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const stateDir = resolveStateDir(cwd);
+  const actionsTaken = [];
 
   if (args["enable-review-gate"]) {
-    const stateDir = resolveStateDir(cwd);
-    setConfig(stateDir, { stopReviewGate: true });
-    log("Review gate ENABLED. Kimi will review code when Claude stops.");
-    return;
+    setConfig(stateDir, "stopReviewGate", true);
+    actionsTaken.push("Enabled the stop-time review gate.");
+  } else if (args["disable-review-gate"]) {
+    setConfig(stateDir, "stopReviewGate", false);
+    actionsTaken.push("Disabled the stop-time review gate.");
   }
 
-  if (args["disable-review-gate"]) {
-    const stateDir = resolveStateDir(cwd);
-    setConfig(stateDir, { stopReviewGate: false });
-    log("Review gate DISABLED.");
-    return;
-  }
-
-  const avail = getKimiAvailability(cwd);
-  if (!avail.available) {
-    log(`Kimi CLI: NOT READY - ${avail.reason}`);
-    log("Run: kimi login");
-    return;
-  }
-
-  log(`Kimi CLI: READY`);
-  log(`  Path: ${avail.kimiPath}`);
-  log(`  Version: ${avail.version}`);
-  log(`  Default model: ${getDefaultModel()}`);
-
-  const stateDir = resolveStateDir(cwd);
+  const codexStatus = getKimiAvailability(cwd);
+  const nodeStatus = binaryAvailable("node", ["--version"], { cwd });
   const config = getConfig(stateDir);
-  log(`  Review gate: ${config.stopReviewGate ? "ENABLED" : "DISABLED"}`);
+  const nextSteps = [];
+
+  if (!codexStatus.available) {
+    nextSteps.push("Install Kimi CLI: pip install kimi-cli");
+  }
+  if (codexStatus.available && codexStatus.reason?.includes("not authenticated")) {
+    nextSteps.push("Run: kimi login");
+  }
+  if (!config.stopReviewGate) {
+    nextSteps.push("Optional: /kimi:setup --enable-review-gate");
+  }
+
+  const report = {
+    ready: nodeStatus.available && codexStatus.available,
+    node: nodeStatus,
+    codex: codexStatus,
+    reviewGateEnabled: config.stopReviewGate,
+    actionsTaken,
+    nextSteps,
+  };
+
+  outputResult(args.json ? report : renderSetupReport(report), args.json);
 }
 
 async function handleReview(args) {
   const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-  const baseRef = args.base || null;
   const model = args.model || getDefaultModel();
+  const baseRef = args.base || null;
 
   const avail = getKimiAvailability(cwd);
-  if (!avail.available) {
-    logError(`Kimi not available: ${avail.reason}`);
+  if (!avail.available) { logError(`Kimi not available: ${avail.reason}`); process.exit(1); }
+
+  ensureGitRepository(cwd);
+  const target = resolveReviewTarget(cwd, { base: baseRef, scope: args.scope });
+  const context = collectReviewContext(cwd, target.baseRef);
+
+  if (!context.diff && !context.status) { log("No changes to review."); return; }
+
+  const stats = getDiffStats(cwd, target.baseRef);
+  log(`Reviewing ${stats.files} files, ~${stats.lines} lines changed...`);
+
+  const template = loadPromptTemplate(ROOT_DIR, "review");
+  const reviewPrompt = template || buildDefaultReviewPrompt();
+  const fullPrompt = buildReviewPrompt(reviewPrompt, context, target);
+
+  if (Buffer.byteLength(fullPrompt, "utf8") > MAX_PROMPT_BYTES) {
+    logError(`Diff too large (${Math.round(Buffer.byteLength(fullPrompt, "utf8") / 1024)}KB). Max is ${MAX_PROMPT_BYTES / 1024}KB. Use --base to narrow scope.`);
     process.exit(1);
   }
 
-  const reviewContext = collectReviewContext(cwd, baseRef);
-  if (!reviewContext.inGit) {
-    logError("Not in a git repository.");
-    process.exit(1);
-  }
+  if (args.background) {
+    const stateDir = resolveStateDir(cwd);
+    const { jobId, promise } = runTrackedJob(cwd, {
+      prompt: fullPrompt,
+      model,
+      kimiBin: avail.kimiPath,
+      title: "Review",
+    });
 
-  if (!reviewContext.diff && !reviewContext.status) {
-    log("No changes to review.");
+    upsertJob(stateDir, { id: jobId, type: "review", status: "running", model, stats, kind: "review" });
+    promise.catch((err) => { upsertJob(stateDir, { id: jobId, status: "failed", error: err.message }); });
+
+    log(`Review started in background. Job ID: ${jobId}`);
+    log("Check progress with: /kimi:status");
     return;
   }
 
-  const stats = getDiffStats(cwd, baseRef);
-  log(`Reviewing ${stats.files} files, ~${stats.lines} lines changed...`);
+  const result = runKimiPrompt(fullPrompt, { cwd, model, timeout: 180_000 });
+  if (!result.ok) { logError(`Review failed: ${result.error}`); if (result.stderr) logError(result.stderr); process.exit(1); }
 
-  const reviewPrompt = `You are an expert code reviewer. Review the following code changes and provide a thorough analysis.
+  const parsed = parseKimiOutput(result.stdout);
+  outputResult(
+    args.json ? { review: "Review", target, result: parsed.parsed, rawOutput: parsed.rawOutput } : renderReviewResult(parsed, { reviewLabel: "Review", targetLabel: target.label }),
+    args.json
+  );
+}
+
+async function handleAdversarialReview(args) {
+  const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const model = args.model || getDefaultModel();
+  const baseRef = args.base || null;
+  const focusText = args._.join(" ").trim();
+
+  const avail = getKimiAvailability(cwd);
+  if (!avail.available) { logError(`Kimi not available: ${avail.reason}`); process.exit(1); }
+
+  ensureGitRepository(cwd);
+  const target = resolveReviewTarget(cwd, { base: baseRef, scope: args.scope });
+  const context = collectReviewContext(cwd, target.baseRef);
+  const template = loadPromptTemplate(ROOT_DIR, "adversarial-review") || "";
+
+  let fullPrompt = buildReviewPrompt(template, context, target);
+  if (focusText) fullPrompt += `\n\n## Specific Focus\n${focusText}`;
+
+  if (Buffer.byteLength(fullPrompt, "utf8") > MAX_PROMPT_BYTES) {
+    logError(`Diff too large (${Math.round(Buffer.byteLength(fullPrompt, "utf8") / 1024)}KB). Use --base to narrow scope.`);
+    process.exit(1);
+  }
+
+  if (args.background) {
+    const stateDir = resolveStateDir(cwd);
+    const { jobId, promise } = runTrackedJob(cwd, {
+      prompt: fullPrompt,
+      model,
+      kimiBin: avail.kimiPath,
+      title: "Adversarial Review",
+    });
+
+    upsertJob(stateDir, { id: jobId, type: "adversarial-review", status: "running", model, kind: "adversarial-review" });
+    promise.catch((err) => { upsertJob(stateDir, { id: jobId, status: "failed", error: err.message }); });
+
+    log(`Adversarial review started in background. Job ID: ${jobId}`);
+    return;
+  }
+
+  const result = runKimiPrompt(fullPrompt, { cwd, model, timeout: 180_000 });
+  if (!result.ok) { logError(`Adversarial review failed: ${result.error}`); process.exit(1); }
+
+  const parsed = parseKimiOutput(result.stdout);
+  outputResult(
+    args.json ? { review: "Adversarial Review", target, result: parsed.parsed, rawOutput: parsed.rawOutput } : renderReviewResult(parsed, { reviewLabel: "Adversarial Review", targetLabel: target.label }),
+    args.json
+  );
+}
+
+async function handleTask(args) {
+  const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const prompt = args._.join(" ").trim();
+  const model = args.model || getDefaultModel();
+
+  if (!prompt) { logError("No task prompt provided."); process.exit(1); }
+
+  const avail = getKimiAvailability(cwd);
+  if (!avail.available) { logError(`Kimi not available: ${avail.reason}`); process.exit(1); }
+
+  const result = runKimiPrompt(prompt, { cwd, model, timeout: 300_000 });
+  if (!result.ok) { logError(`Task failed: ${result.error}`); process.exit(1); }
+  log(result.stdout);
+}
+
+function handleStatus(args) {
+  const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const jobId = args._[0];
+
+  if (jobId) {
+    try {
+      const snapshot = buildSingleJobSnapshot(cwd, jobId);
+      outputResult(args.json ? snapshot.job : renderJobStatusReport(snapshot.job), args.json);
+    } catch (err) {
+      logError(err.message);
+      process.exit(1);
+    }
+    return;
+  }
+
+  const snapshot = buildStatusSnapshot(cwd, { all: args.all });
+  outputResult(args.json ? snapshot : renderStatusReport(snapshot), args.json);
+}
+
+function handleResult(args) {
+  const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const reference = args._[0] || "";
+
+  try {
+    const { stateDir, job } = resolveResultJob(cwd, reference);
+    const stored = readStoredJob(stateDir, job.id);
+
+    if (args.json) {
+      log(JSON.stringify({ job, stored }, null, 2));
+    } else {
+      process.stdout.write(renderStoredJobResult(job, stored));
+    }
+  } catch (err) {
+    logError(err.message);
+    process.exit(1);
+  }
+}
+
+async function handleCancel(args) {
+  const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const reference = args._[0] || "";
+
+  try {
+    const { stateDir, job } = resolveCancelableJob(cwd, reference);
+
+    // Kill the process tree FIRST
+    if (Number.isFinite(job.pid)) {
+      try {
+        terminateProcessTree(job.pid);
+      } catch { /* process may have exited */ }
+    }
+
+    // THEN update state
+    const completedAt = new Date().toISOString();
+    upsertJob(stateDir, {
+      id: job.id,
+      status: "cancelled",
+      pid: null,
+      completedAt,
+      errorMessage: "Cancelled by user.",
+    });
+
+    writeJobFile(stateDir, job.id, {
+      ...(readStoredJob(stateDir, job.id) || {}),
+      status: "cancelled",
+      pid: null,
+      completedAt,
+      errorMessage: "Cancelled by user.",
+    });
+
+    outputResult(
+      args.json ? { jobId: job.id, status: "cancelled" } : renderCancelReport(job),
+      args.json
+    );
+  } catch (err) {
+    logError(err.message);
+    process.exit(1);
+  }
+}
+
+function buildDefaultReviewPrompt() {
+  return `You are an expert code reviewer. Review the following code changes and provide a thorough analysis.
 
 Focus on:
 1. Bugs and logic errors
@@ -115,209 +286,31 @@ Focus on:
 5. Missing error handling
 
 Output your review as structured findings with severity levels (critical/high/medium/low).`;
-
-  const fullPrompt = buildReviewPrompt(reviewContext, reviewPrompt);
-
-  if (args.background) {
-    const stateDir = resolveStateDir(cwd);
-    const { jobId, promise } = runTrackedJob(cwd, {
-      prompt: fullPrompt,
-      model,
-      kimiBin: avail.kimiPath,
-    });
-
-    upsertJob(stateDir, {
-      id: jobId,
-      type: "review",
-      status: "running",
-      model,
-      stats,
-    });
-
-    log(`Review started in background. Job ID: ${jobId}`);
-    log("Check progress with: /kimi:status");
-    log("Get results with: /kimi:result");
-    return;
-  }
-
-  // Foreground review
-  const result = runKimiPrompt(fullPrompt, { cwd, model, timeout: 180_000 });
-
-  if (!result.ok) {
-    logError(`Review failed: ${result.error}`);
-    if (result.stderr) logError(result.stderr);
-    process.exit(1);
-  }
-
-  log("\n=== Kimi Review ===\n");
-  log(result.stdout);
 }
 
-async function handleAdversarialReview(args) {
-  const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-  const baseRef = args.base || null;
-  const model = args.model || getDefaultModel();
-  const focusText = args._.join(" ").trim();
-
-  const avail = getKimiAvailability(cwd);
-  if (!avail.available) {
-    logError(`Kimi not available: ${avail.reason}`);
-    process.exit(1);
-  }
-
-  const reviewContext = collectReviewContext(cwd, baseRef);
-  const template = readPromptTemplate("adversarial-review") || "";
-
-  let fullPrompt = buildReviewPrompt(reviewContext, template);
-  if (focusText) {
-    fullPrompt += `\n\n## Specific Focus\n${focusText}`;
-  }
-
-  if (args.background) {
-    const stateDir = resolveStateDir(cwd);
-    const { jobId } = runTrackedJob(cwd, {
-      prompt: fullPrompt,
-      model,
-      kimiBin: avail.kimiPath,
-    });
-
-    upsertJob(stateDir, {
-      id: jobId,
-      type: "adversarial-review",
-      status: "running",
-      model,
-    });
-
-    log(`Adversarial review started in background. Job ID: ${jobId}`);
-    return;
-  }
-
-  const result = runKimiPrompt(fullPrompt, { cwd, model, timeout: 180_000 });
-
-  if (!result.ok) {
-    logError(`Adversarial review failed: ${result.error}`);
-    process.exit(1);
-  }
-
-  log("\n=== Kimi Adversarial Review ===\n");
-  log(result.stdout);
-}
-
-async function handleTask(args) {
-  const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-  const prompt = args._.join(" ").trim();
-  const model = args.model || getDefaultModel();
-
-  if (!prompt) {
-    logError("No task prompt provided.");
-    process.exit(1);
-  }
-
-  const avail = getKimiAvailability(cwd);
-  if (!avail.available) {
-    logError(`Kimi not available: ${avail.reason}`);
-    process.exit(1);
-  }
-
-  const result = runKimiPrompt(prompt, { cwd, model, timeout: 300_000 });
-
-  if (!result.ok) {
-    logError(`Task failed: ${result.error}`);
-    process.exit(1);
-  }
-
-  log(result.stdout);
-}
-
-function handleStatus(args) {
-  const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-  const stateDir = resolveStateDir(cwd);
-  const jobId = args._[0];
-
-  if (jobId) {
-    const job = getJob(stateDir, jobId);
-    if (!job) {
-      log(`Job ${jobId} not found.`);
-      return;
-    }
-    log(JSON.stringify(job, null, 2));
-    return;
-  }
-
-  const jobs = listJobs(stateDir);
-  if (jobs.length === 0) {
-    log("No Kimi jobs found for this project.");
-    return;
-  }
-
-  log(`Found ${jobs.length} recent job(s):\n`);
-  for (const job of jobs.slice(0, 10)) {
-    const statusIcon = job.status === "completed" ? "[done]"
-      : job.status === "running" ? "[running]"
-      : job.status === "failed" ? "[failed]"
-      : `[${job.status}]`;
-    const type = job.type || "task";
-    log(`  ${statusIcon} ${job.id} (${type}, ${job.model || "default"}) - ${job.updatedAt}`);
-  }
-}
-
-function handleResult(args) {
-  const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-  const stateDir = resolveStateDir(cwd);
-  const jobId = args._[0];
-
-  const job = jobId ? getJob(stateDir, jobId) : getLatestJob(stateDir);
-  if (!job) {
-    log("No job found.");
-    return;
-  }
-
-  if (job.status === "running") {
-    log(`Job ${job.id} is still running.`);
-    return;
-  }
-
-  const logContent = readJobLog(stateDir, job.id);
-  if (!logContent) {
-    log(`No output available for job ${job.id}.`);
-    return;
-  }
-
-  log(`=== Result for ${job.id} (${job.status}) ===\n`);
-  log(logContent);
-}
-
-async function handleCancel(args) {
-  const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-  const stateDir = resolveStateDir(cwd);
-  const jobId = args._[0];
-
-  const job = jobId ? getJob(stateDir, jobId) : getLatestJob(stateDir);
-  if (!job) {
-    log("No job to cancel.");
-    return;
-  }
-
-  if (job.status !== "running") {
-    log(`Job ${job.id} is not running (status: ${job.status}).`);
-    return;
-  }
-
-  upsertJob(stateDir, { id: job.id, status: "cancelled", completedAt: new Date().toISOString() });
-  log(`Job ${job.id} cancelled.`);
+function buildReviewPrompt(template, context, target) {
+  const parts = [];
+  if (template) parts.push(template);
+  parts.push("\n## Git Status\n");
+  parts.push(context.status || "(clean)");
+  parts.push("\n## Diff\n");
+  parts.push(context.diff || "(no changes)");
+  if (context.branch) parts.push(`\n## Branch: ${context.branch}\n`);
+  if (target?.baseRef) parts.push(`\n## Base ref: ${target.baseRef}\n`);
+  return parts.join("\n");
 }
 
 function handleHelp() {
   log("kimi-companion — Kimi CLI integration for Claude Code");
   log("");
   log("Commands:");
-  log("  setup [--enable-review-gate|--disable-review-gate]  Check/configure Kimi setup");
-  log("  review [--base <ref>] [--background] [--model <m>]   Run code review");
-  log("  adversarial-review [--base <ref>] [--background]     Run adversarial review");
-  log("  task <prompt> [--model <m>]                          Run a Kimi task");
-  log("  status [job-id]                                      Check job status");
-  log("  result [job-id]                                      Get job result");
-  log("  cancel [job-id]                                      Cancel a job");
+  log("  setup [--enable-review-gate|--disable-review-gate] [--json]  Check/configure Kimi setup");
+  log("  review [--base <ref>] [--background] [--model <m>] [--json]   Run code review");
+  log("  adversarial-review [--base <ref>] [--background] [--json]     Run adversarial review");
+  log("  task <prompt> [--model <m>]                                   Run a Kimi task");
+  log("  status [job-id] [--all] [--json]                              Check job status");
+  log("  result [job-id] [--json]                                      Get job result");
+  log("  cancel [job-id] [--json]                                      Cancel a job");
 }
 
 switch (args.subcommand) {
