@@ -87,7 +87,7 @@ export function runKimiPromptAsync(prompt, options = {}) {
 
 export function parseKimiOutput(rawOutput) {
   const text = (rawOutput || "").trim();
-  if (!text) return { ok: true, parsed: null, text: "" };
+  if (!text) return { ok: true, parsed: null, rawOutput: "" };
 
   try {
     for (const line of text.split("\n")) {
@@ -96,13 +96,13 @@ export function parseKimiOutput(rawOutput) {
       try {
         const parsed = JSON.parse(trimmed);
         if (parsed.content || parsed.message || parsed.type) {
-          return { ok: true, parsed, text };
+          return { ok: true, parsed, rawOutput: text };
         }
       } catch { /* not JSON */ }
     }
   } catch { /* fallback */ }
 
-  return { ok: true, parsed: null, text };
+  return { ok: true, parsed: null, rawOutput: text };
 }
 
 export function parseStopReviewOutput(rawOutput) {
@@ -127,8 +127,8 @@ export function getDefaultModel() {
   const configPath = path.join(process.env.HOME || "/tmp", ".kimi", "config.toml");
   try {
     const content = fs.readFileSync(configPath, "utf8");
-    const match = content.match(/(?:default_model|model)\s*=\s*"([^"]+)"/);
-    return match ? match[1] : "kimi-for-coding";
+    const match = content.match(/^(default_model|model)\s*=\s*"([^"]+)"/m);
+    return match ? match[2] : "kimi-for-coding";
   } catch {
     return "kimi-for-coding";
   }

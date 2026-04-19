@@ -8,8 +8,9 @@ export function runCommand(command, args = [], options = {}) {
     encoding: "utf8",
     input: options.input,
     maxBuffer: options.maxBuffer,
+    timeout: options.timeout,
     stdio: options.stdio ?? "pipe",
-    shell: process.platform === "win32" ? (process.env.SHELL || true) : false,
+    shell: process.platform === "win32" ? true : false,
     windowsHide: true,
   });
 
@@ -51,7 +52,7 @@ export function binaryAvailable(command, versionArgs = ["--version"], options = 
 }
 
 export function terminateProcessTree(pid, options = {}) {
-  if (!Number.isFinite(pid)) {
+  if (!Number.isFinite(pid) || pid <= 0) {
     return { attempted: false, delivered: false, method: null };
   }
 

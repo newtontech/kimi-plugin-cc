@@ -5,7 +5,7 @@ import process from "node:process";
 import path from "node:path";
 
 import { terminateProcessTree } from "./lib/process.mjs";
-import { loadState, saveState, resolveStateDir } from "./lib/state.mjs";
+import { loadState, saveState, resolveStateDir, upsertJob } from "./lib/state.mjs";
 import { SESSION_ID_ENV } from "./lib/tracked-jobs.mjs";
 
 const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
@@ -37,18 +37,15 @@ function cleanupSessionJobs(cwd, sessionId) {
   const sessionJobs = state.jobs.filter((j) => j.sessionId === sessionId);
   if (sessionJobs.length === 0) return;
 
+  // Only terminate running/queued jobs, keep completed/failed/cancelled in history
   for (const job of sessionJobs) {
     const stillRunning = job.status === "queued" || job.status === "running";
     if (!stillRunning) continue;
     try {
       terminateProcessTree(job.pid ?? Number.NaN);
     } catch { /* ignore teardown failures */ }
+    upsertJob(stateDir, { id: job.id, status: "cancelled", pid: null, completedAt: new Date().toISOString(), errorMessage: "Session ended." });
   }
-
-  saveState(stateDir, {
-    ...state,
-    jobs: state.jobs.filter((j) => j.sessionId !== sessionId),
-  });
 }
 
 function handleSessionStart(input) {

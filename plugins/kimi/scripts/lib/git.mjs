@@ -1,4 +1,4 @@
-import { runCommand, runCommandChecked } from "./process.mjs";
+import { runCommand } from "./process.mjs";
 
 export function resolveWorkspaceRoot(cwd) {
   const result = runCommand("git", ["rev-parse", "--show-toplevel"], { cwd });

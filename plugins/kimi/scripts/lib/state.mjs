@@ -179,7 +179,11 @@ export function writeJobFile(stateDir, jobId, payload) {
 }
 
 export function readJobFile(jobFile) {
-  return JSON.parse(fs.readFileSync(jobFile, "utf8"));
+  try {
+    return JSON.parse(fs.readFileSync(jobFile, "utf8"));
+  } catch {
+    return null;
+  }
 }
 
 export function readStoredJob(stateDir, jobId) {

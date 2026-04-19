@@ -100,8 +100,8 @@ async function handleReview(args) {
   const reviewPrompt = template || buildDefaultReviewPrompt();
   const fullPrompt = buildReviewPrompt(reviewPrompt, context, target);
 
-  if (fullPrompt.length > MAX_PROMPT_BYTES) {
-    logError(`Diff too large (${Math.round(fullPrompt.length / 1024)}KB). Max is ${MAX_PROMPT_BYTES / 1024}KB. Use --base to narrow scope.`);
+  if (Buffer.byteLength(fullPrompt, "utf8") > MAX_PROMPT_BYTES) {
+    logError(`Diff too large (${Math.round(Buffer.byteLength(fullPrompt, "utf8") / 1024)}KB). Max is ${MAX_PROMPT_BYTES / 1024}KB. Use --base to narrow scope.`);
     process.exit(1);
   }
 
@@ -149,8 +149,8 @@ async function handleAdversarialReview(args) {
   let fullPrompt = buildReviewPrompt(template, context, target);
   if (focusText) fullPrompt += `\n\n## Specific Focus\n${focusText}`;
 
-  if (fullPrompt.length > MAX_PROMPT_BYTES) {
-    logError(`Diff too large (${Math.round(fullPrompt.length / 1024)}KB). Use --base to narrow scope.`);
+  if (Buffer.byteLength(fullPrompt, "utf8") > MAX_PROMPT_BYTES) {
+    logError(`Diff too large (${Math.round(Buffer.byteLength(fullPrompt, "utf8") / 1024)}KB). Use --base to narrow scope.`);
     process.exit(1);
   }
 
