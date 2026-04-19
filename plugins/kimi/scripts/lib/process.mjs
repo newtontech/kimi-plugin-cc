@@ -8,9 +8,9 @@ export function runCommand(command, args = [], options = {}) {
     encoding: "utf8",
     input: options.input,
     maxBuffer: options.maxBuffer,
-    timeout: options.timeout,
+    timeout: options.timeout ?? 30_000,
     stdio: options.stdio ?? "pipe",
-    shell: process.platform === "win32" ? true : false,
+    shell: false,
     windowsHide: true,
   });
 
@@ -39,16 +39,21 @@ export function runCommandChecked(command, args = [], options = {}) {
 export function binaryAvailable(command, versionArgs = ["--version"], options = {}) {
   const result = runCommand(command, versionArgs, options);
   if (result.error && result.error.code === "ENOENT") {
-    return { available: false, detail: "not found" };
+    return { available: false, detail: "not found", path: null };
   }
   if (result.error) {
-    return { available: false, detail: result.error.message };
+    return { available: false, detail: result.error.message, path: null };
   }
   if (result.status !== 0) {
     const detail = result.stderr.trim() || result.stdout.trim() || `exit ${result.status}`;
-    return { available: false, detail };
+    return { available: false, detail, path: null };
   }
-  return { available: true, detail: result.stdout.trim() || result.stderr.trim() || "ok" };
+  const whichResult = spawnSync(process.platform === "win32" ? "where" : "which", [command], {
+    encoding: "utf8",
+    timeout: 5_000,
+  });
+  const resolvedPath = whichResult.stdout?.trim() || command;
+  return { available: true, detail: result.stdout.trim() || result.stderr.trim() || "ok", path: resolvedPath };
 }
 
 export function terminateProcessTree(pid, options = {}) {

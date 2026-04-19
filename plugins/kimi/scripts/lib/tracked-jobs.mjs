@@ -21,6 +21,7 @@ export function appendLogLine(logFile, message) {
 
 export function createJobLogFile(stateDir, jobId, title) {
   const logFile = resolveJobLogFile(stateDir, jobId);
+  fs.mkdirSync(path.dirname(logFile), { recursive: true });
   fs.writeFileSync(logFile, "", "utf8");
   if (title) appendLogLine(logFile, `Starting ${title}.`);
   return logFile;
@@ -107,6 +108,7 @@ export function runTrackedJob(cwd, options) {
       });
 
       writeJobFile(stateDir, jobId, {
+        ...(readStoredJob(stateDir, jobId) || {}),
         ...runningRecord,
         pid: child.pid,
         status: finalStatus,

@@ -16,11 +16,7 @@ export function getKimiAvailability(cwd) {
     };
   }
 
-  const whichResult = spawnSync(process.platform === "win32" ? "where" : "which", [KIMI_BIN], {
-    encoding: "utf8",
-    timeout: 5000,
-  });
-  const kimiPath = whichResult.stdout?.trim() || KIMI_BIN;
+  const kimiPath = status.path || KIMI_BIN;
   const version = status.detail;
 
   const credDir = path.join(process.env.HOME || "/tmp", ".kimi", "credentials");
@@ -44,6 +40,9 @@ export function runKimiPrompt(prompt, options = {}) {
 
   if (options.model) {
     args.push("--model", options.model);
+  }
+  if (options.outputFormat) {
+    args.push("--output-format", options.outputFormat);
   }
   if (options.noThinking) {
     args.push("--no-thinking");

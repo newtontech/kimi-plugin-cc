@@ -60,9 +60,7 @@ export function resolveJobFile(stateDir, jobId) {
 }
 
 export function resolveJobLogFile(stateDir, jobId) {
-  const logsDir = path.join(stateDir, LOGS_DIR_NAME);
-  fs.mkdirSync(logsDir, { recursive: true });
-  return path.join(logsDir, `${jobId}.log`);
+  return path.join(stateDir, LOGS_DIR_NAME, `${jobId}.log`);
 }
 
 export function ensureStateDir(stateDir) {

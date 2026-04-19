@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-function formatElapsed(startValue, endValue = null) {
+export function formatElapsed(startValue, endValue = null) {
   const start = Date.parse(startValue ?? "");
   if (!Number.isFinite(start)) return null;
   const end = endValue ? Date.parse(endValue) : Date.now();
@@ -32,9 +32,6 @@ export function renderSetupReport(report) {
   lines.push("=== Kimi Setup ===\n");
   lines.push(`Node: ${report.node.available ? report.node.detail : "NOT FOUND"}`);
   lines.push(`Kimi CLI: ${report.codex.available ? report.codex.detail : "NOT FOUND"}`);
-  if (report.auth) {
-    lines.push(`Auth: ${report.auth.loggedIn ? "Logged in" : "Not authenticated"}`);
-  }
   lines.push(`Review gate: ${report.reviewGateEnabled ? "ENABLED" : "DISABLED"}`);
 
   if (report.actionsTaken?.length) {
@@ -100,8 +97,8 @@ export function renderReviewResult(parsed, meta = {}) {
   const lines = [];
   lines.push(`=== ${label}${target ? `: ${target}` : ""} ===\n`);
 
-  if (parsed.parseError) {
-    lines.push(`Parse warning: ${parsed.parseError}\n`);
+  if (parsed.ok && !parsed.parsed && parsed.rawOutput) {
+    lines.push("(No structured output — showing raw response)\n");
   }
 
   const result = parsed.parsed;
