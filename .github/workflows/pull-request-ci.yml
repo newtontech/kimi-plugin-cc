@@ -30,6 +30,8 @@ jobs:
 
       - name: Run test suite
         run: npm test
+        env:
+          KIMI_SKIP_LIVE_TESTS: 1
 
       - name: Check version sync
         run: npm run check-version

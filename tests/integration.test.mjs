@@ -167,7 +167,7 @@ describe("kimi-companion.mjs CLI", () => {
       timeout: 5_000,
     });
     // Script should at least start (may timeout, which is fine)
-    assert.ok(result.stderr === "" || result.stderr.includes("Kimi") || result.stderr.includes("Error") || true);
+    assert.ok(result.stderr === "" || result.stderr.includes("Kimi") || result.stderr.includes("Error"));
   });
 
   it("should show empty status when no jobs exist", () => {
@@ -181,7 +181,9 @@ describe("kimi-companion.mjs CLI", () => {
   });
 });
 
-describe("Kimi CLI review (live)", () => {
+const SKIP_LIVE = process.env.KIMI_SKIP_LIVE_TESTS === "1";
+
+describe("Kimi CLI review (live)", { skip: SKIP_LIVE }, () => {
   it("should perform a real code review", { timeout: 120_000 }, () => {
     // Create a temporary file with intentional issues for review
     const tmpDir = path.join(process.cwd(), `.kimi-test-${Date.now()}`);
